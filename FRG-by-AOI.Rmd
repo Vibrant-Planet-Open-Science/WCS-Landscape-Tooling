@@ -1,0 +1,116 @@
+---
+title: "FRG by Landscape"
+author: "Katharyn Duffy, Michael Koontz"
+date: "`r Sys.Date()`"
+output: html_document
+
+---
+
+Check for required packages:
+
+```{r, eval=FALSE}
+install.packages(c("shiny", "sf", "leaflet", "ggplot2", "dplyr", "raster", "aws.s3"))
+```
+
+```{r}
+library(shiny)
+library(sf)
+library(leaflet)
+library(ggplot2)
+library(dplyr)
+library(raster)
+library(aws.s3)
+
+# UI
+ui <- fluidPage(
+  titlePanel("FRG by Landscape Analyzer"),
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("geopackage", "Upload Geopackage", accept = c(".gpkg")),
+      actionButton("process", "Process")
+    ),
+    mainPanel(
+      leafletOutput("map"),
+      tableOutput("freq_table"),
+      plotOutput("freq_plot")
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Reactive values to store the processed data
+  values <- reactiveValues(
+    sf_data = NULL,
+    freq_table = NULL,
+    raster_data = NULL
+  )
+  
+  # Load the raster data from S3
+  observe({
+    s3_raster <- raster("s3://vp-sci-grp/landfire/interim/bps/2.2.0/LF2020_FRG_220_CONUS.tif")
+    values$raster_data <- s3_raster
+  })
+  
+  # Process the uploaded geopackage
+  observeEvent(input$process, {
+    req(input$geopackage)
+    
+    # Read the uploaded geopackage
+    sf_data <- st_read(input$geopackage$datapath)
+    
+    # Reproject sf_data to match the raster's CRS
+    sf_data <- st_transform(sf_data, crs = crs(values$raster_data))
+    values$sf_data <- sf_data
+    
+    # Extract raster values for the geopackage (use mean value if multiple cells overlap)
+    raster_values <- extract(values$raster_data, sf_data, fun = mean, df = TRUE)
+    
+    # Check if extraction was successful
+    if (!is.null(raster_values) && nrow(raster_values) == nrow(sf_data)) {
+      sf_data$RasterValue <- raster_values[,2] # Use the correct column index for raster values
+      
+      # Generate frequency table
+      freq_table <- sf_data %>%
+        group_by(RasterValue) %>%
+        summarise(Frequency = n()) %>%
+        arrange(desc(Frequency))
+      
+      values$freq_table <- freq_table
+    } else {
+      showNotification("Raster extraction failed. Check CRS alignment and data.", type = "error")
+    }
+  })
+  
+  # Render the map
+  output$map <- renderLeaflet({
+    req(values$sf_data)
+    
+    leaflet() %>%
+      addProviderTiles("OpenStreetMap") %>%
+      addPolygons(data = values$sf_data, color = "blue", weight = 1)
+  })
+  
+  # Render the frequency table
+  output$freq_table <- renderTable({
+    req(values$freq_table)
+    values$freq_table
+  })
+  
+  # Render the frequency plot
+  output$freq_plot <- renderPlot({
+    req(values$freq_table)
+    
+    ggplot(values$freq_table, aes(x = RasterValue, y = Frequency)) +
+      geom_bar(stat = "identity", fill = "steelblue") +
+      theme_minimal() +
+      labs(title = "Frequency of Raster Values",
+           x = "Raster Value",
+           y = "Frequency")
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+```
