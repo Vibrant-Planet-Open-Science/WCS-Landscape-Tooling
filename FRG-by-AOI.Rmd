@@ -24,6 +24,19 @@ library(aws.s3)
 # UI
 ui <- fluidPage(
   titlePanel("FRG by Landscape Analyzer"),
+  
+  # Introductory Text
+  fluidRow(
+    column(12,
+           tags$div(
+             p("Welcome to the FRG by Landscape Analyzer!"),
+             p("This tool allows you to upload a geopackage file and analyze the spatial distribution of Fire Regime Groups (FRG) across a specific landscape. 
+               The application will generate a map, a frequency table, and a frequency plot based on the data you provide."),
+             p("To get started, simply upload your geopackage file using the 'Upload Geopackage' button on the left, and click 'Process' to generate the outputs.  This tool is currently functional for CONUS, thus processing takes ~5 minutes.  Grab a cup of coffee and wait for the Shiny magic!")
+           )
+    )
+  ),
+  
   sidebarLayout(
     sidebarPanel(
       fileInput("geopackage", "Upload Geopackage", accept = c(".gpkg")),
