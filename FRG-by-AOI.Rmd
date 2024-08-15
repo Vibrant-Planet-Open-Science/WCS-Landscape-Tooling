@@ -18,7 +18,7 @@ library(sf)
 library(leaflet)
 library(ggplot2)
 library(dplyr)
-library(raster)
+library(terra)
 library(aws.s3)
 
 # UI
@@ -62,7 +62,7 @@ server <- function(input, output, session) {
   
   # Load the raster data from S3
   observe({
-    s3_raster <- raster("s3://vp-sci-grp/landfire/interim/bps/2.2.0/LF2020_FRG_220_CONUS.tif")
+    s3_raster <- terra::rast("s3://vp-sci-grp/landfire/interim/bps/2.2.0/LF2020_FRG_220_CONUS.tif")
     values$raster_data <- s3_raster
   })
   
@@ -74,26 +74,20 @@ server <- function(input, output, session) {
     sf_data <- st_read(input$geopackage$datapath)
     
     # Reproject sf_data to match the raster's CRS
-    sf_data <- st_transform(sf_data, crs = crs(values$raster_data))
+    sf_data <- st_transform(sf_data, crs = sf::st_crs(values$raster_data))
     values$sf_data <- sf_data
     
     # Extract raster values for the geopackage (use mean value if multiple cells overlap)
-    raster_values <- extract(values$raster_data, sf_data, fun = mean, df = TRUE)
+    cropped_raster <- terra::crop(
+      x = values$raster_data, 
+      y = sf_data, 
+      mask = TRUE
+    )
     
-    # Check if extraction was successful
-    if (!is.null(raster_values) && nrow(raster_values) == nrow(sf_data)) {
-      sf_data$RasterValue <- raster_values[,2] # Use the correct column index for raster values
-      
-      # Generate frequency table
-      freq_table <- sf_data %>%
-        group_by(RasterValue) %>%
-        summarise(Frequency = n()) %>%
-        arrange(desc(Frequency))
-      
-      values$freq_table <- freq_table
-    } else {
-      showNotification("Raster extraction failed. Check CRS alignment and data.", type = "error")
-    }
+    freq_table <- terra::freq(x = cropped_raster)
+    
+    values$freq_table <- freq_table
+    
   })
   
   # Render the map
@@ -102,7 +96,7 @@ server <- function(input, output, session) {
     
     leaflet() %>%
       addProviderTiles("OpenStreetMap") %>%
-      addPolygons(data = values$sf_data, color = "blue", weight = 1)
+      addPolygons(data = sf::st_transform(values$sf_data, 4326), color = "blue", weight = 1)
   })
   
   # Render the frequency table
@@ -115,7 +109,7 @@ server <- function(input, output, session) {
   output$freq_plot <- renderPlot({
     req(values$freq_table)
     
-    ggplot(values$freq_table, aes(x = RasterValue, y = Frequency)) +
+    ggplot(values$freq_table, aes(x = value, y = count)) +
       geom_bar(stat = "identity", fill = "steelblue") +
       theme_minimal() +
       labs(title = "Frequency of Raster Values",
