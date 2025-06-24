@@ -1,12 +1,3 @@
----
-title: "FRG by Landscape"
-author: "Katharyn Duffy, Michael Koontz"
-date: "`r Sys.Date()`"
-output: html_document
-
----
-
-```{r, echo=FALSE, message=FALSE}
 library(shiny)
 library(sf)
 library(leaflet)
@@ -14,6 +5,7 @@ library(dplyr)
 library(terra)
 library(aws.s3)
 library(plotly)  # New library
+library(tools)   # For file_path_sans_ext
 
 # UI
 ui <- fluidPage(
@@ -34,7 +26,8 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       fileInput("geopackage", "Upload Geopackage", accept = c(".gpkg")),
-      actionButton("process", "Process")
+      actionButton("process", "Process"),
+      downloadButton("downloadData", "Download Frequency Table")  # Download button
     ),
     mainPanel(
       leafletOutput("map"),
@@ -51,7 +44,9 @@ server <- function(input, output, session) {
   values <- reactiveValues(
     sf_data = NULL,
     freq_table = NULL,
-    raster_data = NULL
+    raster_data = NULL,
+    no_data_count = NULL,
+    gpkg_name = NULL  # For geopackage name
   )
   
   # Load the raster data from S3
@@ -63,6 +58,9 @@ server <- function(input, output, session) {
   # Process the uploaded geopackage
   observeEvent(input$process, {
     req(input$geopackage)
+    
+    # Extract the geopackage filename without extension
+    values$gpkg_name <- file_path_sans_ext(input$geopackage$name)
     
     # Start the progress bar
     withProgress(message = 'Processing...', value = 0, {
@@ -76,19 +74,27 @@ server <- function(input, output, session) {
       values$sf_data <- sf_data
       incProgress(0.6)  # Progress update
       
-      # Step 3: Extract raster values for the geopackage (use mean value if multiple cells overlap)
+      # Step 3: Extract raster values for the geopackage
       cropped_raster <- terra::crop(
         x = values$raster_data, 
         y = sf_data, 
         mask = TRUE
       )
       
-      freq_table <- terra::freq(x = cropped_raster)
+      # Count No Data cells
+      no_data_count <- sum(is.na(terra::values(cropped_raster)))
+      values$no_data_count <- no_data_count
+      
+      # Calculate the frequency table
+      freq_table <- terra::freq(x = cropped_raster) %>%
+        select(-layer) %>%
+        mutate(FRG = as.character(value)) %>%  # Convert FRG to character
+        select(-value) %>%
+        mutate(Proportion = count/sum(count))
       
       values$freq_table <- freq_table
       incProgress(1)  # Progress update to completion
     })
-    
   })
   
   # Render the map
@@ -103,20 +109,33 @@ server <- function(input, output, session) {
   # Render the frequency table
   output$freq_table <- renderTable({
     req(values$freq_table)
-    values$freq_table
+    freq_table_with_na <- values$freq_table %>%
+      bind_rows(tibble(FRG = "No Data", count = values$no_data_count, Proportion = NA))
+    freq_table_with_na
   })
   
   # Render the frequency plot using Plotly
   output$freq_plot <- renderPlotly({
     req(values$freq_table)
     
-    plot_ly(values$freq_table, x = ~value, y = ~count, type = 'bar', color = ~as.factor(value)) %>%
+    plot_ly(values$freq_table, x = ~FRG, y = ~count, type = 'bar', color = ~as.factor(FRG)) %>%
       layout(title = "Frequency of Fire Regime Groups",
              xaxis = list(title = "FRG"),
              yaxis = list(title = "Frequency"))
   })
+  
+  # Provide a download handler for the frequency table
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste(values$gpkg_name, "frequency_table-", Sys.Date(), ".csv", sep="")
+    },
+    content = function(file) {
+      freq_table_with_na <- values$freq_table %>%
+        bind_rows(tibble(FRG = "No Data", count = values$no_data_count, Proportion = NA))
+      write.csv(freq_table_with_na, file, row.names = FALSE)
+    }
+  )
 }
 
 # Run the application 
 shinyApp(ui = ui, server = server)
-```
